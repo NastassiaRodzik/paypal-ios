@@ -1,18 +1,43 @@
 import Foundation
 
+// MARK: - Outer GraphQL envelope
+
 struct CreateShopperSessionResponse: Decodable {
 
     let external: ExternalNode?
 
     struct ExternalNode: Decodable {
-        let createShopperSessionWithAppSwitchEligibility: SessionResultNode?
+        let createShopperSessionWithAppSwitchEligibility: ShopperSessionResult?
     }
+}
 
-    struct SessionResultNode: Decodable {
-        let shopperSessionConfig: ShopperSessionConfig?
-    }
+// MARK: - Inner result
+
+/// The payload returned by `createShopperSessionWithAppSwitchEligibility`.
+struct ShopperSessionResult: Decodable {
+
+    /// Whether the buyer's device is eligible for PayPal app-switch.
+    let appSwitchEligible: Bool
+
+    /// The app-switch redirect URL to open when eligible.
+    let redirectURL: String?
+
+    /// Fallback web checkout URL if app-switch is unavailable.
+    let checkoutFallbackUrl: String?
+
+    /// Reason the session is ineligible for app-switch (nil when eligible).
+    let ineligibleReason: String?
+
+    /// Authentication methods matched for the buyer's identity.
+    let matchedAuthenticationMethods: [String]?
+
+    /// The pre-warmed Shopper Session config.
+    let shopperSessionConfig: ShopperSessionConfig?
 
     struct ShopperSessionConfig: Decodable {
+        /// Opaque Shopper Session identifier.
         let id: String
+        /// ISO-8601 expiry timestamp.
+        let expiresAt: String
     }
 }
