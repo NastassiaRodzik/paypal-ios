@@ -42,7 +42,11 @@ class PayPalWebViewModel: ObservableObject {
         }
         payPalWebCheckoutClient = client
 
+        // TODO: Replace placeholder contextId/token/tokenType with merchant-provided values.
         client.createPayPalSession(
+            contextId: "ppcp-stage-test",
+            token: UUID().uuidString,
+            tokenType: TokenType.orderID,
             userIdentity: userIdentity,
             urlConfig: shopperSessionURLConfig,
             userAction: userAction

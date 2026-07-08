@@ -25,7 +25,11 @@ class PayPalVaultViewModel: VaultViewModel {
             phone: userPhone,
             ssid: userSSID
         )
+        // TODO: Replace placeholder contextId/token/tokenType with merchant-provided values.
         client.createPayPalSession(
+            contextId: "ppcp-stage-test",
+            token: UUID().uuidString,
+            tokenType: TokenType.orderID,
             userIdentity: resolvedUserIdentity,
             urlConfig: shopperSessionURLConfig,
             userAction: selectedUserAction

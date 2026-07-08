@@ -2,36 +2,28 @@ import Foundation
 
 struct CreateShopperSessionVariables: Encodable {
 
-    let returnUrl: URL
-    let cancelUrl: URL
-    let fallbackSchemeUrl: URL?
-    let userAction: String
+    // MARK: - Required
+
     let osType: String
-    let integrationArtifact: String
+    let token: String
+    let tokenType: String
+    let contextId: String
+    let returnAppUrl: String
+    let cancelAppUrl: String
+
+    // MARK: - Optional — derived internally
+
+    let osVersion: String?
+    let fallbackUrlScheme: String?
+    let buyerEmailAddressMerchantPassed: String?
+    let paypalNativeAppInstalled: Bool?
+    let bnCode: String?
     let integrationChannel: String?
-    let userIdentity: UserIdentityVariables?
-}
+    let sdkVersion: String?
 
-struct UserIdentityVariables: Encodable {
+    // MARK: - Optional — not currently wired
 
-    let serverSideShopperSessionId: String?
-    let email: String?
-    let phone: String?
-
-    init(from identity: PayPalUserIdentity) {
-        serverSideShopperSessionId = identity.existingPayPalSessionID
-        email = identity.email
-        phone = identity.phone
-    }
-}
-
-extension PayPalUserAction {
-
-    var graphQLValue: String {
-        switch self {
-        case .continue: return "CONTINUE"
-        case .payNow: return "PAY_NOW"
-        case .setupNow: return "SETUP_NOW"
-        }
-    }
+    let paymentMethodSelected: String?
+    let productCode: String?
+    let paymentType: String?
 }
