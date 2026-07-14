@@ -101,6 +101,9 @@ public class PayPalWebCheckoutClient: NSObject {
     ///   - urlConfig: Return and cancel deep-link URLs registered with PayPal.
     ///   - userAction: The buyer action intent. Defaults to `.continue`.
     public func createPayPalSession(
+        contextId: String,
+        token: String,
+        tokenType: String,
         userIdentity: PayPalUserIdentity? = nil,
         urlConfig: PayPalURLConfig,
         userAction: PayPalUserAction = .continue
@@ -113,9 +116,11 @@ public class PayPalWebCheckoutClient: NSObject {
 
         sessionTask = Task {
             try await createShopperSessionAPI.createShopperSessionWithAppSwitchEligibility(
+                contextId: contextId,
+                token: token,
+                tokenType: tokenType,
                 urlConfig: urlConfig,
-                userIdentity: userIdentity,
-                userAction: userAction
+                userIdentity: userIdentity
             )
         }
     }
