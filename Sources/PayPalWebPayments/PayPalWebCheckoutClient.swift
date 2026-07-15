@@ -44,10 +44,16 @@ public class PayPalWebCheckoutClient: NSObject {
     /// `create-paypal-session:succeeded` analytics event.
     private var isCachedSession: Bool?
 
-    /// The Shopper Session ID associated with the most recently attempted session-based app switch.
-    /// Captured in `attemptSessionAppSwitch` and read back in `handleReturnURL` so the `handle-return:*`
-    /// analytics events can report `shopper_session_id` without depending on the return URL echoing it.
-    private var appSwitchSessionID: String?
+    /// The Shopper Session ID for the checkout/vault attempt currently in flight. Captured as soon as
+    /// the Shopper Session fetch succeeds in `start()`/`vault()`, so every analytics event fired for the
+    /// remainder of that attempt — app-switch or web fallback, success, cancellation, or failure — can
+    /// report `shopper_session_id`, not just the app-switch/`handleReturnURL` events that used to be the
+    /// only ones with access to it (back when this was `shopperSessionID`, set only from within
+    /// `attemptSessionAppSwitch`).
+    /// Cleared once the attempt reaches a terminal outcome, in `handleReturnURL`, `startWebCheckoutFlow`,
+    /// or `startVaultWebAuthFlow` — never in `start()`/`vault()`'s own defer, since those fire before the
+    /// downstream app-switch/web flow (which still needs the ID) has even started.
+    private var shopperSessionID: String?
 
     // MARK: - Initializer
 
@@ -141,7 +147,8 @@ public class PayPalWebCheckoutClient: NSObject {
         guard let task = sessionTask else {
             analyticsService?.sendEvent(
                 "paypal-web-payments:checkout:session-not-started",
-                errorDescription: PayPalError.sessionNotStartedError.errorDescription
+                errorDescription: PayPalError.sessionNotStartedError.errorDescription,
+                shopperSessionId: shopperSessionID
             )
             DispatchQueue.main.async {
                 completion(.failure(PayPalError.sessionNotStartedError))
@@ -160,18 +167,22 @@ public class PayPalWebCheckoutClient: NSObject {
                 }
 
                 let session = try await task.value
+                shopperSessionID = session.shopperSessionConfig?.id
                 analyticsService?.sendEvent(
                     "paypal-web-payments:create-paypal-session:succeeded",
                     isCachedSession: isCachedSession,
                     isVaultRequest: false,
-                    shopperSessionId: session.shopperSessionConfig?.id,
+                    shopperSessionId: shopperSessionID,
                     startTime: sessionCreationStartTime
                 )
-                analyticsService?.sendEvent("paypal-web-payments:checkout:started")
+                analyticsService?.sendEvent("paypal-web-payments:checkout:started", shopperSessionId: shopperSessionID)
                 launchCheckout(session: session, orderID: orderID, completion: completion)
             } catch {
                 sessionTask = nil
-                analyticsService?.sendEvent("paypal-web-payments:checkout:session-fetch:failed", errorDescription: error.localizedDescription
+                analyticsService?.sendEvent(
+                    "paypal-web-payments:create-paypal-session:failed",
+                    errorDescription: error.localizedDescription,
+                    shopperSessionId: shopperSessionID
                 )
                 await fallBackToPatchCCOOrWeb(orderID: orderID, completion: completion)
             }
@@ -189,7 +200,7 @@ public class PayPalWebCheckoutClient: NSObject {
         let appInstalled = urlOpener.isPayPalAppInstalled()
 
         guard appInstalled else {
-            startWebCheckoutFlow(orderID: orderID, fundingSource: .paypal, sessionID: nil, completion: completionOnce)
+            startWebCheckoutFlow(orderID: orderID, fundingSource: .paypal, completion: completionOnce)
             return
         }
 
@@ -209,7 +220,7 @@ public class PayPalWebCheckoutClient: NSObject {
             return
         case .fallback(let reason):
             analyticsService?.sendEvent("paypal-web-payments:checkout:fallback-to-web:\(reason)")
-            startWebCheckoutFlow(orderID: orderID, fundingSource: .paypal, sessionID: nil, completion: completionOnce)
+            startWebCheckoutFlow(orderID: orderID, fundingSource: .paypal, completion: completionOnce)
         }
     }
 
@@ -235,7 +246,8 @@ public class PayPalWebCheckoutClient: NSObject {
         guard let task = sessionTask else {
             analyticsService?.sendEvent(
                 "paypal-web-payments:vault-wo-purchase:session-not-started",
-                errorDescription: PayPalError.sessionNotStartedError.errorDescription
+                errorDescription: PayPalError.sessionNotStartedError.errorDescription,
+                shopperSessionId: shopperSessionID
             )
             DispatchQueue.main.async {
                 completion(.failure(PayPalError.sessionNotStartedError))
@@ -254,18 +266,23 @@ public class PayPalWebCheckoutClient: NSObject {
                 }
 
                 let session = try await task.value
+                shopperSessionID = session.shopperSessionConfig?.id
                 analyticsService?.sendEvent(
                     "paypal-web-payments:create-paypal-session:succeeded",
                     isCachedSession: isCachedSession,
                     isVaultRequest: true,
-                    shopperSessionId: session.shopperSessionConfig?.id,
+                    shopperSessionId: shopperSessionID,
                     startTime: sessionCreationStartTime
                 )
-                analyticsService?.sendEvent("paypal-web-payments:vault-wo-purchase:started")
+                analyticsService?.sendEvent("paypal-web-payments:vault-wo-purchase:started", shopperSessionId: shopperSessionID)
                 launchVault(session: session, setupTokenID: setupTokenID, completion: completion)
             } catch {
                 sessionTask = nil
-                analyticsService?.sendEvent("paypal-web-payments:vault-wo-purchase:session-fetch:failed", errorDescription: error.localizedDescription)
+                analyticsService?.sendEvent(
+                    "paypal-web-payments:create-paypal-session:failed",
+                    errorDescription: error.localizedDescription,
+                    shopperSessionId: shopperSessionID
+                )
                 await fallBackToPatchCCOOrWebForVault(setupTokenID: setupTokenID, completion: completion)
             }
         }
@@ -346,7 +363,6 @@ public class PayPalWebCheckoutClient: NSObject {
                     startWebCheckoutFlow(
                         orderID: request.orderID,
                         fundingSource: request.fundingSource,
-                        sessionID: nil,
                         completion: completionOnce
                     )
                 }
@@ -354,7 +370,6 @@ public class PayPalWebCheckoutClient: NSObject {
                 startWebCheckoutFlow(
                     orderID: request.orderID,
                     fundingSource: request.fundingSource,
-                    sessionID: nil,
                     completion: completionOnce
                 )
             }
@@ -407,13 +422,13 @@ public class PayPalWebCheckoutClient: NSObject {
     /// Call this from your `UIApplicationDelegate` or `Scene` delegate when a PayPal URL is received.
     public func handleReturnURL(_ url: URL) {
         defer {
-            appSwitchSessionID = nil
+            shopperSessionID = nil
             sessionTask = nil
         }
 
         analyticsService?.sendEvent(
             "paypal-web-payments:checkout:handle-return:started",
-            shopperSessionId: appSwitchSessionID
+            shopperSessionId: shopperSessionID
         )
         let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let items = comps?.queryItems ?? []
@@ -435,7 +450,7 @@ public class PayPalWebCheckoutClient: NSObject {
         if isCancel {
             analyticsService?.sendEvent(
                 "paypal-web-payments:checkout:handle-return:succeeded",
-                shopperSessionId: appSwitchSessionID
+                shopperSessionId: shopperSessionID
             )
             if let completion = vaultAppSwitchCompletion {
                 vaultAppSwitchCompletion = nil
@@ -446,7 +461,7 @@ public class PayPalWebCheckoutClient: NSObject {
                 appSwitchCompletion = nil
                 analyticsService?.sendEvent(
                     "paypal-web-payments:checkout:app-switch:canceled",
-                    shopperSessionId: appSwitchSessionID
+                    shopperSessionId: shopperSessionID
                 )
                 notifyCheckoutCancelWithError(with: PayPalError.checkoutCanceledError, completion: completion)
                 return
@@ -457,7 +472,7 @@ public class PayPalWebCheckoutClient: NSObject {
         if hasVaultSuccess, let tokenID = vaultTokenID, let sessionID = vaultSessionID {
             analyticsService?.sendEvent(
                 "paypal-web-payments:checkout:handle-return:succeeded",
-                shopperSessionId: appSwitchSessionID
+                shopperSessionId: shopperSessionID
             )
             if let completion = vaultAppSwitchCompletion {
                 vaultAppSwitchCompletion = nil
@@ -470,7 +485,7 @@ public class PayPalWebCheckoutClient: NSObject {
         if hasCheckoutSuccess, let oid = orderID, let pid = payerID {
             analyticsService?.sendEvent(
                 "paypal-web-payments:checkout:handle-return:succeeded",
-                shopperSessionId: appSwitchSessionID
+                shopperSessionId: shopperSessionID
             )
             if let completion = appSwitchCompletion {
                 appSwitchCompletion = nil
@@ -482,7 +497,8 @@ public class PayPalWebCheckoutClient: NSObject {
 
         analyticsService?.sendEvent(
             "paypal-web-payments:checkout:handle-return:failed",
-            errorDescription: PayPalError.malformedResultError.errorDescription
+            errorDescription: PayPalError.malformedResultError.errorDescription,
+            shopperSessionId: shopperSessionID
         )
         if let completion = vaultAppSwitchCompletion {
             vaultAppSwitchCompletion = nil
@@ -522,7 +538,6 @@ public class PayPalWebCheckoutClient: NSObject {
                     self.startWebCheckoutFlow(
                         orderID: orderID,
                         fundingSource: .paypal,
-                        sessionID: session.shopperSessionConfig?.id,
                         completion: completionOnce
                     )
                 }
@@ -590,7 +605,7 @@ public class PayPalWebCheckoutClient: NSObject {
            let base = session.redirectURL,
            let sessionID = session.shopperSessionConfig?.id,
            let url = makeURL(base, sessionID) {
-            let result = await attemptSessionAppSwitch(url: url, sessionID: sessionID, handlers: handlers)
+            let result = await attemptSessionAppSwitch(url: url, handlers: handlers)
             switch result {
             case .launched:
                 return
@@ -607,14 +622,12 @@ public class PayPalWebCheckoutClient: NSObject {
     /// caller, and `handlers.eventPrefix` scopes the analytics events to that flow.
     private func attemptSessionAppSwitch<T>(
         url: URL,
-        sessionID: String?,
         handlers: SessionAppSwitchHandlers<T>
     ) async -> AppSwitchAttempt {
-        appSwitchSessionID = sessionID
         analyticsService?.sendEvent(
             "paypal-web-payments:checkout:app-switch:started",
             appSwitchURL: url,
-            shopperSessionId: sessionID
+            shopperSessionId: shopperSessionID
         )
         await MainActor.run {
             handlers.setCompletion(handlers.completionOnce)
@@ -624,14 +637,14 @@ public class PayPalWebCheckoutClient: NSObject {
             analyticsService?.sendEvent(
                 "\(handlers.eventPrefix):app-switch:succeeded",
                 appSwitchURL: url,
-                shopperSessionId: sessionID
+                shopperSessionId: shopperSessionID
             )
             return .launched
         } else {
             analyticsService?.sendEvent(
                 "\(handlers.eventPrefix):app-switch:failed",
                 errorDescription: "cannot_open_url",
-                shopperSessionId: sessionID
+                shopperSessionId: shopperSessionID
             )
             await MainActor.run {
                 handlers.setCompletion(nil)
@@ -645,12 +658,11 @@ public class PayPalWebCheckoutClient: NSObject {
     private func startWebCheckoutFlow(
         orderID: String,
         fundingSource: PayPalWebCheckoutFundingSource,
-        sessionID: String?,
         completion: @escaping (Result<PayPalWebCheckoutResult, CoreSDKError>) -> Void
     ) {
         analyticsService?.sendEvent(
             "paypal-web-payments:checkout:auth-challenge-presentation:started",
-            shopperSessionId: sessionID
+            shopperSessionId: shopperSessionID
         )
         Task {
             do {
@@ -671,7 +683,8 @@ public class PayPalWebCheckoutClient: NSObject {
             else {
                 analyticsService?.sendEvent(
                     "paypal-web-payments:checkout:auth-challenge-presentation:failed",
-                    errorDescription: PayPalError.payPalURLError.errorDescription
+                    errorDescription: PayPalError.payPalURLError.errorDescription,
+                    shopperSessionId: shopperSessionID
                 )
                 notifyCheckoutFailure(with: PayPalError.payPalURLError, completion: completion)
                 return
@@ -684,12 +697,13 @@ public class PayPalWebCheckoutClient: NSObject {
                     if didDisplay {
                         self?.analyticsService?.sendEvent(
                             "paypal-web-payments:checkout:auth-challenge-presentation:succeeded",
-                            shopperSessionId: sessionID
+                            shopperSessionId: self?.shopperSessionID
                         )
                     }
                 },
                 sessionDidComplete: { [weak self] url, error in
                     guard let self else { return }
+                    defer { self.shopperSessionID = nil }
                     if let error {
                         let sdkError: CoreSDKError
                         switch error {
@@ -700,7 +714,8 @@ public class PayPalWebCheckoutClient: NSObject {
                         }
                         self.analyticsService?.sendEvent(
                             "paypal-web-payments:checkout:auth-challenge-presentation:failed",
-                            errorDescription: sdkError.errorDescription
+                            errorDescription: sdkError.errorDescription,
+                            shopperSessionId: self.shopperSessionID
                         )
                         self.sessionTask = nil
                         self.notifyCheckoutFailure(with: sdkError, completion: completion)
@@ -752,10 +767,11 @@ public class PayPalWebCheckoutClient: NSObject {
                 let event = didDisplay
                     ? "paypal-web-payments:vault-wo-purchase:auth-challenge-presentation:succeeded"
                     : "paypal-web-payments:vault-wo-purchase:auth-challenge-presentation:failed"
-                self?.analyticsService?.sendEvent(event)
+                self?.analyticsService?.sendEvent(event, shopperSessionId: self?.shopperSessionID)
             },
             sessionDidComplete: { [weak self] url, error in
                 guard let self else { return }
+                defer { self.shopperSessionID = nil }
                 if let error {
                     let sdkError: CoreSDKError
                     switch error {
@@ -813,8 +829,7 @@ public class PayPalWebCheckoutClient: NSObject {
             else {
                 return .fallback(eligibility.ineligibleReason ?? "ineligible")
             }
-
-            return await attemptSessionAppSwitch(url: url, sessionID: nil, handlers: handlers)
+            return await attemptSessionAppSwitch(url: url, handlers: handlers)
         } catch {
             analyticsService?.sendEvent("\(handlers.eventPrefix):app-switch-eligibility:error")
             return .fallback("patch_or_lsat_failed")
@@ -870,7 +885,7 @@ public class PayPalWebCheckoutClient: NSObject {
         for result: PayPalWebCheckoutResult,
         completion: (Result<PayPalWebCheckoutResult, CoreSDKError>) -> Void
     ) {
-        analyticsService?.sendEvent("paypal-web-payments:checkout:succeeded")
+        analyticsService?.sendEvent("paypal-web-payments:checkout:succeeded", shopperSessionId: shopperSessionID)
         completion(.success(result))
     }
 
@@ -880,7 +895,8 @@ public class PayPalWebCheckoutClient: NSObject {
     ) {
         analyticsService?.sendEvent(
             "paypal-web-payments:checkout:failed",
-            errorDescription: error.errorDescription
+            errorDescription: error.errorDescription,
+            shopperSessionId: shopperSessionID
         )
         completion(.failure(error))
     }
@@ -889,7 +905,7 @@ public class PayPalWebCheckoutClient: NSObject {
         with error: CoreSDKError,
         completion: (Result<PayPalWebCheckoutResult, CoreSDKError>) -> Void
     ) {
-        analyticsService?.sendEvent("paypal-web-payments:checkout:canceled")
+        analyticsService?.sendEvent("paypal-web-payments:checkout:canceled", shopperSessionId: shopperSessionID)
         completion(.failure(error))
     }
 
@@ -897,7 +913,7 @@ public class PayPalWebCheckoutClient: NSObject {
         for result: PayPalVaultResult,
         completion: (Result<PayPalVaultResult, CoreSDKError>) -> Void
     ) {
-        analyticsService?.sendEvent("paypal-web-payments:vault-wo-purchase:succeeded")
+        analyticsService?.sendEvent("paypal-web-payments:vault-wo-purchase:succeeded", shopperSessionId: shopperSessionID)
         completion(.success(result))
     }
 
@@ -907,7 +923,8 @@ public class PayPalWebCheckoutClient: NSObject {
     ) {
         analyticsService?.sendEvent(
             "paypal-web-payments:vault-wo-purchase:failed",
-            errorDescription: error.errorDescription
+            errorDescription: error.errorDescription,
+            shopperSessionId: shopperSessionID
         )
         completion(.failure(error))
     }
@@ -916,7 +933,7 @@ public class PayPalWebCheckoutClient: NSObject {
         with error: CoreSDKError,
         completion: (Result<PayPalVaultResult, CoreSDKError>) -> Void
     ) {
-        analyticsService?.sendEvent("paypal-web-payments:vault-wo-purchase:canceled")
+        analyticsService?.sendEvent("paypal-web-payments:vault-wo-purchase:canceled", shopperSessionId: shopperSessionID)
         completion(.failure(error))
     }
 }
