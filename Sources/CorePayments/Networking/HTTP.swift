@@ -30,6 +30,9 @@ class HTTP {
             body: httpRequest.body
         )
 
+        // Captured immediately before the `URLSession` call, in epoch milliseconds.
+        let startTime = Int64(Date().timeIntervalSince1970 * 1000)
+
         let (data, response): (Data, URLResponse)
         do {
             (data, response) = try await urlSession.performRequest(with: urlRequest)
@@ -39,12 +42,20 @@ class HTTP {
             throw NetworkingError.unknownError
         }
 
+        // Captured immediately after the response is received, in epoch milliseconds.
+        let endTime = Int64(Date().timeIntervalSince1970 * 1000)
+
         guard let response = response as? HTTPURLResponse else {
             throw NetworkingError.invalidURLResponseError
         }
 
         PayPalSDKLogger.logResponse(status: response.statusCode, url: httpRequest.url, body: data)
 
-        return HTTPResponse(status: response.statusCode, body: data, url: httpRequest.url)
+        return HTTPResponse(
+            status: response.statusCode,
+            body: data,
+            url: httpRequest.url,
+            timing: HTTPResponse.Timing(startTime: startTime, endTime: endTime)
+        )
     }
 }
