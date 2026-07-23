@@ -948,7 +948,8 @@ public class PayPalWebCheckoutClient: NSObject {
         var queryItems = [
             URLQueryItem(name: tokenType.tokenQueryParameterName, value: orderID),
             URLQueryItem(name: "fundingSource", value: fundingSource.rawValue),
-            URLQueryItem(name: "integration_artifact", value: PayPalCoreConstants.integrationArtifact)
+            URLQueryItem(name: "integration_artifact", value: PayPalCoreConstants.integrationArtifact),
+            URLQueryItem(name: "platform", value: "iOS")
         ]
         if let shopperSessionID = analyticsData?.shopperSessionID {
             queryItems.append(URLQueryItem(name: "shopperSessionId", value: shopperSessionID))
@@ -965,7 +966,8 @@ public class PayPalWebCheckoutClient: NSObject {
         var vaultURLComponents = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
         var queryItems = [
             URLQueryItem(name: tokenType.tokenQueryParameterName, value: setupTokenID),
-            URLQueryItem(name: "integration_artifact", value: PayPalCoreConstants.integrationArtifact)
+            URLQueryItem(name: "integration_artifact", value: PayPalCoreConstants.integrationArtifact),
+            URLQueryItem(name: "platform", value: "iOS")
         ]
         if let sessionID = analyticsData?.shopperSessionID {
             queryItems.append(URLQueryItem(name: "shopperSessionId", value: sessionID))
